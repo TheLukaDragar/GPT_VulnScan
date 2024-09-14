@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import os
 import fnmatch
 import subprocess
@@ -11,6 +13,134 @@ from litellm import token_counter
 from litellm import get_max_tokens
 
 
+default_exclude = [
+    ".git",
+    ".gitignore",
+    ".DS_Store",
+    ".svn",
+    ".hg",
+    ".idea",
+    ".vscode",
+    ".settings",
+    ".pytest_cache",
+    "__pycache__",
+    "node_modules",
+    "vendor",
+    "build",
+    "dist",
+    "bin",
+    "logs",
+    "log",
+    "tmp",
+    "temp",
+    "coverage",
+    "venv",
+    "env",
+    "*.html",
+    "*.css",
+    "*.svg",
+    "manifest.json",
+    "package-lock.json",
+    "yarn.lock",
+    ".prettierignore",
+    ".gitignore",
+    "go.sum",
+    ".github",
+    ".vulnbox_deploy.sh",
+    ".vulnbox_remote",
+    "public",
+    ".dockerignore",
+    "package-lock.json",
+    "frontend"
+]
+
+KAOS = """def exploit(flag_id=None):
+    session = get_http_session()
+
+    # TODO: your exploit
+
+    #res = session.get(f'http://{get_team_ip()}:1234/')
+    #extract_flag(res.content, flag_id)"""
+
+PROMPT = """**Role:** You are a cybersecurity expert specializing in finding security vulnerabilities and performing red team tasks.
+
+You are given the source code of a vulnerable application in /service/. Here is the source code:
+
+{{ context }}
+"""
+
+# Overview
+TASK_1 = """
+Your first task is to provide a 1 paragraph description of the application. Note the technologies used, and what skills someone might require in order to find vulnerabilities in this service. After the paragraph, add some tags. Like this:
+Tags: python, javascript, fastapi, postgres
+"""
+
+# Interaction script
+TASK_2 = """
+Your first task is to implement all the interaction possible with the service. Use Python. If the service is HTTP, use the requests module with Session. If it's TCP, use pwntools.
+If it's something else, please specify. But you need to implement all the interaction.
+Only use one single file. Make sure your response is Markdown.
+Prefer procedural code over OOP and pass state via parameters. That makes it easier to copy-paste for later.
+"""
+
+# Vulns and exploit and patch snippets
+# You must find at least {{ num_vuln }} vulnerabilities.
+TASK_3 = """Given all the previous information. Your task is to find all the vulnerabilities in the service.
+Focus on vulnerabilities that require no user interaction (IDOR, LFI, RCE, SQLi, SSRF, XXE, Deserialization, etc), and don't spend time on XSS or CSRF.
+Since this is a competition, use this template Python script to get points for your exploit:
+```exploit.py
+{{ kaos }}
+```
+For each vulnerability, report the code that is responsible for the vulnerability, the vulnerability summary and the exploit code.
+You must always do that, even if the exploit is trivial (e.g. a file read). YOU MUST ALWAYS INCLUDE THE EXPLOIT CODE, WITH AN EXAMPLE BASED ON THE TEMPLATE. REUSE PARTS THAT INTERACT WITH THE SERVICE (by copy and pasting).
+Make sure that the vulnerability is legit, by double checking the code from the repository that is responsible for the vulnerability.
+YOU MUST REPORT ALL FOUND VULNERABILITIES.
+
+Follow this template:
+
+### Vulnerability <index>: <title>
+
+For each vulnerable code snippet {
+<path to snippet>
+```code-language
+<vulnerable code snippet>
+```
+}
+
+<vulnerability description>
+
+<exploit code>
+
+<ENDVULN>
+"""
+
+# Task for patching
+TASK_4="""
+For each vulnerability, report the patch for the vulnerable code and short explanation.
+You must always do that, even if the exploit is trivial (e.g. a file read). YOU MUST ALWAYS INCLUDE THE PATCH CODE, WITH AN EXAMPLE BASED ON THE TEMPLATE. REUSE PARTS THAT INTERACT WITH THE SERVICE (by copy and pasting).
+Make sure that the patch is legit, by double checking the code from the repository that is responsible for the vulnerability.
+YOU MUST REPORT ALL PATCHES FOR THE ALL FOUND VULNERABILITIES.
+
+Follow this template:
+
+### Patch <index>: <title>
+
+For each vulnerable code snippet {
+<path to snippet>
+```code-language
+<vulnerable code snippet>
+```
+
+<short patch description>
+
+```code-language
+<patch code snippet>
+```
+}
+
+<ENDPATCH>
+"""
+
 class VulnScan:
     def __init__(self, path: str, model: str = "gpt-4o-2024-08-06", num_vuln: int = 7):
         self.path = path
@@ -21,25 +151,33 @@ class VulnScan:
         self.boilerplate: str = ""
         self.issues: List[str] = []
         self.output: str = ""
+        self.patches: List[str] = []
 
     def scan(self) -> None:
         context = format_gpt(self.path)
 
         # Get description and tags
-        response = self._get_completion(TASK1, context)
+        response = self._get_completion(TASK_1, context)
         self._parse_description_and_tags(response)
 
         # Get boilerplate code
         context += "\nHere is a description of the service:\n"
-        response = self._get_completion(TASK2, context)
+        response = self._get_completion(TASK_2, context)
         self.boilerplate = response
 
         # Get vulnerabilities
         context += "\nHere is how to interact with the service:\n"
         response = self._get_completion(
-            Template(TASK3).render(kaos=KAOS, num_vuln=self.num_vuln), context
+            Template(TASK_3).render(kaos=KAOS, num_vuln=self.num_vuln),
+            context
         )
         self._parse_issues(response)
+
+        context += "\nPatches:\n"
+        response = self._get_completion(TASK_4, context)
+        self._parse_patches(response)
+
+
 
     # def _get_completion(self, task: str, context: str) -> str:
     #     template = Template(PROMPT)
@@ -70,6 +208,7 @@ class VulnScan:
 
         # Truncate the context if it's too long
         if tokens > max_tokens:
+            print("max tokens reached ", tokens)
             # Trim context to fit within the limit, ensuring there's space for the task and response
             max_context_tokens = (
                 max_tokens - token_counter(model="gpt-4o-2024-08-06", text=task) - 50
@@ -117,7 +256,12 @@ class VulnScan:
 
     def _parse_issues(self, response: str) -> None:
         self.issues = [
-            x.strip() for x in response.split("### Vulnerability") if x.strip()
+            x.strip() for x in response.split("<ENDVULN>") if x.strip()
+        ]
+
+    def _parse_patches(self, response: str) -> None:
+        self.patches = [
+            x.strip() for x in response.split("<ENDPATCH>") if x.strip()
         ]
 
     def __repr__(self) -> str:
@@ -129,91 +273,8 @@ class VulnScan:
             f"Description: {self.description[:50]}...\n"
             f"Tags: {', '.join(self.tags)}\n"
             f"Number of issues found: {len(self.issues)}"
+            f"Number of patches found: {len(self.patches)}"
         )
-
-
-KAOS = """def exploit(flag_id=None):
-    session = get_http_session()
-
-    # TODO: your exploit
-
-    #res = session.get(f'http://{get_team_ip()}:1234/')
-    #extract_flag(res.content, flag_id)"""
-PROMPT = """**Role:** You are a cybersecurity expert specializing in finding security vulnerabilities and performing red team tasks.
-
-You are given the source code of a vulnerable application in /service/. Here is the source code:
-
-{{ context }}
-"""
-TASK1 = """Your first task is to provide a 1 paragraph description of the application. Note the technologies used, and what skills someone might require in order to find vulnerabilities in this service. After the paragraph, add some tags. Like this:
-Tags: python, javascript, fastapi, postgres"""
-
-TASK2 = """Your first task is to implement all the interaction possible with the service. Use Python. If the service is HTTP, use the requests module with Session. If it's TCP, use pwntools.
-If it's something else, please specify. But you need to implement all the interaction.
-Only use one single file. Make sure your response is Markdown.
-Prefer procedural code over OOP and pass state via parameters. That makes it easier to copy-paste for later.
-"""
-
-TASK3 = """Given all the previous information. Your task is to find all the vulnerabilities in the service.
-Focus on vulnerabilities that require no user interaction (IDOR, LFI, RCE, SQLi, SSRF, XXE, Deserialization, etc). and don't spend time on XSS or CSRF.
-Since this is a competition, use this template Python script to get points for your exploit:
-```exploit.py
-{{ kaos }}
-```
-For each vulnerability, report the code that is responsible for the vulnerability, the vulnerability summary and the exploit code.
-You must always do that, even if the exploit is trivial (e.g. a file read). YOU MUST ALWAYS INCLUDE THE EXPLOIT CODE, WITH AN EXAMPLE BASED ON THE TEMPLATE. REUSE PARTS THAT INTERACT WITH THE SERVICE (by copy and pasting).
-Make sure that the vulnerability is legit, by double checking the code from the repository that is responsible for the vulnerability.
-You must find at least {{ num_vuln }} vulnerabilities.
-Follow this template:
-
-### Vulnerability <index>: <title>
-
-For each vulnerable code snippet {
-<path to snippet>
-```code-language
-<vulnerable code snippet>
-```
-}
-
-<vulnerability description>
-
-<exploit code>
-"""
-
-default_exclude = [
-    ".git",
-    ".gitignore",
-    ".DS_Store",
-    ".svn",
-    ".hg",
-    ".idea",
-    ".vscode",
-    ".settings",
-    ".pytest_cache",
-    "__pycache__",
-    "node_modules",
-    "vendor",
-    "build",
-    "dist",
-    "bin",
-    "logs",
-    "log",
-    "tmp",
-    "temp",
-    "coverage",
-    "venv",
-    "env",
-    "*.html",
-    "*.css",
-    "*.svg",
-    "manifest.json",
-    "package-lock.json",
-    "yarn.lock",
-    ".prettierignore",
-    ".gitignore",
-    "go.sum",
-]
-
 
 def find_text_files(folder_path: str) -> List[str]:
     """
@@ -304,16 +365,22 @@ def format_gpt(folder_to_search: str, service_root: str = "/service/") -> str:
     output = ""
     root = Path(folder_to_search).resolve()
 
+    print(f"Paths:")
+    all_files = []
     for file in find_text_files(folder_to_search):
         path = Path(file).resolve().relative_to(root)
         output += "```" + service_root + str(path) + "\n"
         if is_text_file(file):
             with open(file, "r") as f:
                 output += f.read()
+                all_files.append(file)
         else:
             output += run_file(file)
         output += "\n```\n\n"
 
+    # print(f"All paths:\n {'\n'.join(path)}")
+    for path in all_files:
+        print(path)
     return output
 
 
@@ -330,30 +397,38 @@ if __name__ == "__main__":
     vulnscan = VulnScan(args.folder_path)
     vulnscan.scan()
 
-    print(vulnscan.output)
+    # print(vulnscan.output)
 
-    print("=== Parsed output ===", file=sys.stderr)
-    print("Description:", vulnscan.description, file=sys.stderr)
-    print("Tags:", vulnscan.tags, file=sys.stderr)
-    print("Boilerplate:", vulnscan.boilerplate, file=sys.stderr)
-    print("Vulns:", file=sys.stderr)
-    for issue in vulnscan.issues:
-        print(issue, file=sys.stderr)
+    # print("=== Parsed output ===", file=sys.stderr)
+    # print("Description:", vulnscan.description, file=sys.stderr)
+    # print("Tags:", vulnscan.tags, file=sys.stderr)
+    # print("Boilerplate:", vulnscan.boilerplate, file=sys.stderr)
+    # print("Vulns:", file=sys.stderr)
+    # for issue in vulnscan.issues:
+    #     print(issue, file=sys.stderr)
 
-    with open("vulnscan_output.txt", "w") as f:
+    # with open("vulnscan_output.md", "w") as f:
         # Write the raw output
-        f.write(vulnscan.output + "\n")
+        # f.write(vulnscan.output + "\n")
 
         # Write parsed output
-        f.write("=== Parsed output ===\n")
+        # f.write("=== Parsed output ===\n")
+        # f.write("Vulns:\n")
+
+    with open("description_gpt.md", "w") as f:
         f.write(f"Description: {vulnscan.description}\n")
         f.write(f"Tags: {', '.join(vulnscan.tags)}\n")
         f.write(f"Boilerplate: {vulnscan.boilerplate}\n")
-        f.write("Vulns:\n")
+
+    with open(f"vulns.md", "w") as f:
         for issue in vulnscan.issues:
             f.write(f"{issue}\n")
 
-    print("Vulnerability scan completed. Results saved to vulnscan_output.txt")
+    with open(f"patches.md", "w") as f:
+        for patch in vulnscan.patches:
+            f.write(f"{patch}\n")
+
+    print("Vulnerability scan completed. Results saved.")
 
 
 # write txt
