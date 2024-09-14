@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 
+import logging
 import os
 import fnmatch
+import random
 import subprocess
+import time
 from jinja2 import Template
 from pathlib import Path
 from pathspec import PathSpec
@@ -11,6 +14,8 @@ from typing import List
 import litellm
 from litellm import token_counter
 from litellm import get_max_tokens
+
+from litellm import RateLimitError, APIError  # Replace with actual exceptions
 
 
 default_exclude = [
@@ -51,7 +56,7 @@ default_exclude = [
     "public",
     ".dockerignore",
     "package-lock.json",
-    "frontend"
+    "frontend",
 ]
 
 KAOS = """def exploit(flag_id=None):
@@ -115,7 +120,7 @@ For each vulnerable code snippet {
 """
 
 # Task for patching
-TASK_4="""
+TASK_4 = """
 For each vulnerability, report the patch for the vulnerable code and short explanation.
 You must always do that, even if the exploit is trivial (e.g. a file read). YOU MUST ALWAYS INCLUDE THE PATCH CODE, WITH AN EXAMPLE BASED ON THE TEMPLATE. REUSE PARTS THAT INTERACT WITH THE SERVICE (by copy and pasting).
 Make sure that the patch is legit, by double checking the code from the repository that is responsible for the vulnerability.
@@ -140,6 +145,7 @@ For each vulnerable code snippet {
 
 <ENDPATCH>
 """
+
 
 class VulnScan:
     def __init__(self, path: str, model: str = "gpt-4o-2024-08-06", num_vuln: int = 7):
@@ -168,16 +174,13 @@ class VulnScan:
         # Get vulnerabilities
         context += "\nHere is how to interact with the service:\n"
         response = self._get_completion(
-            Template(TASK_3).render(kaos=KAOS, num_vuln=self.num_vuln),
-            context
+            Template(TASK_3).render(kaos=KAOS, num_vuln=self.num_vuln), context
         )
         self._parse_issues(response)
 
         context += "\nPatches:\n"
         response = self._get_completion(TASK_4, context)
         self._parse_patches(response)
-
-
 
     # def _get_completion(self, task: str, context: str) -> str:
     #     template = Template(PROMPT)
@@ -216,17 +219,60 @@ class VulnScan:
             truncated_context = self._truncate_context(context, max_context_tokens)
             formatted_prompt = template.render(context=truncated_context)
 
-        # Proceed with generating the completion
-        response = litellm.completion(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": formatted_prompt},
-                {"role": "user", "content": task},
-            ],
-        )
+        # Retry parameters
+        max_retries = 5
+        backoff_factor = 2  # Exponential backoff factor
+        initial_delay = 10  # Initial wait time in seconds
+        jitter = 4  # Random jitter to prevent synchronized retries
 
-        self.output += response.choices[0].message.content + "\n"
-        return response.choices[0].message.content
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Proceed with generating the completion
+                response = litellm.completion(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": formatted_prompt},
+                        {"role": "user", "content": task},
+                    ],
+                )
+
+                # Assuming response structure; adjust as per litellm's actual response
+                completion_text = response.choices[0].message.content
+                self.output += completion_text + "\n"
+                return completion_text
+
+            except RateLimitError as e:
+                print("Rate limit hit", e)
+                if attempt < max_retries:
+                    # Calculate exponential backoff delay with jitter
+                    wait_time = initial_delay * (backoff_factor ** (attempt - 1))
+                    wait_time += random.uniform(0, jitter)
+                    logging.warning(
+                        f"Rate limit hit. Attempt {attempt}/{max_retries}. "
+                        f"Waiting for {wait_time:.2f} seconds before retrying..."
+                    )
+                    time.sleep(wait_time)
+                else:
+                    logging.error(
+                        f"Rate limit exceeded after {max_retries} attempts. "
+                        "Aborting operation."
+                    )
+                    raise
+
+            except APIError as e:
+                # Handle other API-related errors if necessary
+                logging.error(f"API error occurred: {e}")
+                raise
+
+            except Exception as e:
+                # Handle unexpected exceptions
+                logging.error(f"An unexpected error occurred: {e}")
+                raise
+
+        # If all retries fail, raise an exception
+        raise Exception(
+            "Failed to get completion after multiple retries due to rate limits."
+        )
 
     def _truncate_context(self, context: str, max_tokens: int) -> str:
         """
@@ -255,14 +301,10 @@ class VulnScan:
             self.tags = [tag.strip() for tag in parts[1].split(",")]
 
     def _parse_issues(self, response: str) -> None:
-        self.issues = [
-            x.strip() for x in response.split("<ENDVULN>") if x.strip()
-        ]
+        self.issues = [x.strip() for x in response.split("<ENDVULN>") if x.strip()]
 
     def _parse_patches(self, response: str) -> None:
-        self.patches = [
-            x.strip() for x in response.split("<ENDPATCH>") if x.strip()
-        ]
+        self.patches = [x.strip() for x in response.split("<ENDPATCH>") if x.strip()]
 
     def __repr__(self) -> str:
         return f"VulnScan(path='{self.path}', model='{self.model}', num_vuln={self.num_vuln})"
@@ -275,6 +317,7 @@ class VulnScan:
             f"Number of issues found: {len(self.issues)}"
             f"Number of patches found: {len(self.patches)}"
         )
+
 
 def find_text_files(folder_path: str) -> List[str]:
     """
@@ -408,12 +451,12 @@ if __name__ == "__main__":
     #     print(issue, file=sys.stderr)
 
     # with open("vulnscan_output.md", "w") as f:
-        # Write the raw output
-        # f.write(vulnscan.output + "\n")
+    # Write the raw output
+    # f.write(vulnscan.output + "\n")
 
-        # Write parsed output
-        # f.write("=== Parsed output ===\n")
-        # f.write("Vulns:\n")
+    # Write parsed output
+    # f.write("=== Parsed output ===\n")
+    # f.write("Vulns:\n")
 
     with open("vulns.md", "w") as f:
         f.write(f"Description: {vulnscan.description}\n")
