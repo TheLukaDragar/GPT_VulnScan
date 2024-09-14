@@ -7,6 +7,10 @@ from pathspec import PathSpec
 from pathspec.patterns import GitWildMatchPattern
 from typing import List
 import litellm
+from litellm import token_counter
+from litellm import get_max_tokens 
+
+
 
 
 class VulnScan:
@@ -22,6 +26,9 @@ class VulnScan:
 
     def scan(self) -> None:
         context = format_gpt(self.path)
+
+        #check if input is too long
+        if len(context) > 4096:
 
         # Get description and tags
         response = self._get_completion(TASK1, context)
@@ -39,10 +46,46 @@ class VulnScan:
         )
         self._parse_issues(response)
 
+    # def _get_completion(self, task: str, context: str) -> str:
+    #     template = Template(PROMPT)
+    #     formatted_prompt = template.render(context=context)
+
+    #     #check if input is too long
+    #     tokens = token_counter(model="gpt-4o-2024-08-06", text=formatted_prompt)
+    #     if tokens > get_max_tokens(model="gpt-4o-2024-08-06"):
+
+
+
+
+
+    #     response = litellm.completion(
+    #         model=self.model,
+    #         messages=[
+    #             {"role": "system", "content": formatted_prompt},
+    #             {"role": "user", "content": task},
+    #         ],
+    #     )
+
+    #     self.output += response.choices[0].message.content + "\n"
+    #     return response.choices[0].message.content
+
+
     def _get_completion(self, task: str, context: str) -> str:
         template = Template(PROMPT)
         formatted_prompt = template.render(context=context)
 
+        # Check if input is too long
+        tokens = token_counter(model="gpt-4o-2024-08-06", text=formatted_prompt)
+        max_tokens = get_max_tokens(model="gpt-4o-2024-08-06")
+        
+        # Truncate the context if it's too long
+        if tokens > max_tokens:
+            # Trim context to fit within the limit, ensuring there's space for the task and response
+            max_context_tokens = max_tokens - token_counter(model="gpt-4o-2024-08-06", text=task) - 50  # Leaving some buffer for response
+            truncated_context = self._truncate_context(context, max_context_tokens)
+            formatted_prompt = template.render(context=truncated_context)
+
+        # Proceed with generating the completion
         response = litellm.completion(
             model=self.model,
             messages=[
@@ -53,6 +96,20 @@ class VulnScan:
 
         self.output += response.choices[0].message.content + "\n"
         return response.choices[0].message.content
+    
+
+    def _truncate_context(self, context: str, max_tokens: int) -> str:
+        """
+        Truncates the context to fit within the given max_tokens limit.
+        """
+        context_tokens = token_counter(model="gpt-4o-2024-08-06", text=context)
+        if context_tokens <= max_tokens:
+            return context
+
+        print(f"Truncating context from {context_tokens} tokens to {max_tokens} tokens.")
+        # Truncate the context to fit within the token limit
+        truncated_context = context[:max_tokens]
+        return truncated_context
 
     def _parse_description_and_tags(self, response: str) -> None:
         if "tags:" in response:
