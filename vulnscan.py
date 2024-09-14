@@ -415,12 +415,11 @@ if __name__ == "__main__":
         # f.write("=== Parsed output ===\n")
         # f.write("Vulns:\n")
 
-    with open("description_gpt.md", "w") as f:
+    with open("vulns.md", "w") as f:
         f.write(f"Description: {vulnscan.description}\n")
         f.write(f"Tags: {', '.join(vulnscan.tags)}\n")
         f.write(f"Boilerplate: {vulnscan.boilerplate}\n")
-
-    with open(f"vulns.md", "w") as f:
+        f.write("\n\n")
         for issue in vulnscan.issues:
             f.write(f"{issue}\n")
 
