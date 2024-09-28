@@ -57,6 +57,7 @@ default_exclude = [
     ".dockerignore",
     "package-lock.json",
     "frontend",
+    "data"
 ]
 
 KAOS = """def exploit(flag_id=None):
