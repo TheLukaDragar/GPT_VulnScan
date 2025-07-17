@@ -58,7 +58,17 @@ default_exclude = [
     "package-lock.json",
     "frontend",
     "data",
+    "GPT_VulnScan",
+    "GPT_VulnScan/*",
     "./GPT_VulnScan/*",
+    "*/GPT_VulnScan/*",
+    "vulnscan.py",
+    "vulns.md", 
+    "patches.md",
+    "workflow.yml",
+    ".github/workflows/*",
+    "*.yml",
+    "*.md",
 ]
 
 KAOS = """def exploit(flag_id=None):
