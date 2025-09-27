@@ -68,6 +68,7 @@ default_exclude = [
     "patches.md",
     "workflow.yml",
     ".github/workflows/*",
+    ".gitea/workflows/*",
     "*.yml",
     "*.md",
 ]
