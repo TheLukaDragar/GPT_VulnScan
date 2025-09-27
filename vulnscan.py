@@ -6,6 +6,7 @@ import fnmatch
 import random
 import subprocess
 import time
+import re
 from jinja2 import Template
 from pathlib import Path
 from pathspec import PathSpec
@@ -411,6 +412,66 @@ def is_text_file(file_path: str, max_size: int = 100 * 1024) -> bool:
         return False
 
 
+def remove_comments_c_cpp_java_csharp_js(text):
+    single_line_comment = re.compile(r'//.*', re.MULTILINE)
+    multi_line_comment = re.compile(r'/\*[\s\S]*?\*/', re.MULTILINE)
+
+    text = single_line_comment.sub('', text)
+    text = multi_line_comment.sub('', text)
+    return text
+
+def remove_comments_python(text):
+    single_line_comment = re.compile(r'#.*', re.MULTILINE)
+    multi_line_comment = re.compile(r'"""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\'', re.MULTILINE)
+
+    text = single_line_comment.sub('', text)
+    text = multi_line_comment.sub('', text)
+    return text
+
+def remove_comments_html_xml(text):
+    comment = re.compile(r'<!--[\s\S]*?-->', re.MULTILINE)
+    text = comment.sub('', text)
+    return text
+
+def remove_comments_css(text):
+    comment = re.compile(r'/\*[\s\S]*?\*/', re.MULTILINE)
+    text = comment.sub('', text)
+    return text
+
+def remove_comments_shell(text):
+    single_line_comment = re.compile(r'#.*', re.MULTILINE)
+    text = single_line_comment.sub('', text)
+    return text
+
+def remove_comments_sql(text):
+    single_line_comment = re.compile(r'--.*', re.MULTILINE)
+    multi_line_comment = re.compile(r'/\*[\s\S]*?\*/', re.MULTILINE)
+
+    text = single_line_comment.sub('', text)
+    text = multi_line_comment.sub('', text)
+    return text
+
+def get_file_extension(filename):
+    return os.path.splitext(filename)[1].lower()
+
+def remove_comments_from_file_content(content: str, filepath: str) -> str:
+    ext = get_file_extension(filepath)
+
+    if ext in ['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.java', '.js', '.jsx', '.ts', '.tsx', '.cs']:
+        return remove_comments_c_cpp_java_csharp_js(content)
+    elif ext in ['.py', '.pyw']:
+        return remove_comments_python(content)
+    elif ext in ['.html', '.htm', '.xml', '.xhtml']:
+        return remove_comments_html_xml(content)
+    elif ext in ['.css', '.scss', '.sass']:
+        return remove_comments_css(content)
+    elif ext in ['.sh', '.bash', '.zsh', '.fish']:
+        return remove_comments_shell(content)
+    elif ext in ['.sql', '.mysql', '.pgsql']:
+        return remove_comments_sql(content)
+    else:
+        return content
+
 def run_file(path: str) -> str:
     result = subprocess.run(["file", path], capture_output=True, text=True)
     return result.stdout
@@ -427,7 +488,9 @@ def format_gpt(folder_to_search: str, service_root: str = "/service/") -> str:
         output += "```" + service_root + str(path) + "\n"
         if is_text_file(file):
             with open(file, "r") as f:
-                output += f.read()
+                content = f.read()
+                content = remove_comments_from_file_content(content, file)
+                output += content
                 all_files.append(file)
         else:
             output += run_file(file)
